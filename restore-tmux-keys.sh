@@ -44,8 +44,8 @@ do
         bind_key="'\"'"
     fi
 
-    quote_semicolons "$bind_command"
-    bind_command="$return_value"
+    # quote_semicolons "$bind_command"
+    # bind_command="$return_value"
 
     echo "unbind-key -T $bind_key_table $bind_key" >> $TMP_FILE
     echo "bind-key $bind_flags -T $bind_key_table $bind_key $bind_command" >> $TMP_FILE

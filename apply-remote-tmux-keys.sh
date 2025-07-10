@@ -24,22 +24,22 @@ declare -a FORWARD_COMMAND_WHITELIST=("break-pane"
                                       "delete-buffer"
                                       "display-message"
                                       "display-panes"
-                                      "find-window"
-                                      "kill-pane"
-                                      "kill-window"
+                                      "find-window" #pin
+                                      "kill-pane" #pin
+                                      "kill-window" #pin
                                       "last-pane"
                                       "last-window"
                                       "list-buffers"
-                                      "move-window"
+                                      "move-window" #pin
                                       "new-window"
                                       "next-layout"
                                       "paste-buffer"
-                                      "rename-window"
+                                      "rename-window" #pin
                                       "resize-pane"
                                       "rotate-window"
                                       "select-layout"
                                       "select-pane"
-                                      "select-window"
+                                      "select-window" #pin
                                       "split-window"
                                       "swap-pane"
                                       "previous-window"
@@ -47,25 +47,18 @@ declare -a FORWARD_COMMAND_WHITELIST=("break-pane"
 
 
 INPUT_FILE="$SCRIPT_DIR/original_bindings.txt"
-TMP_FILE="$(mktemp)"
+TMP_FILE="$SCRIPT_DIR/tmpfile"
 TRIGGER_COMMAND_FILE="$SCRIPT_DIR/trigger_file.sh"
 
-tmux list-keys > $INPUT_FILE
+tmux list-keys -T prefix > $INPUT_FILE
 
 rm -f $TMP_FILE
 rm -f $TRIGGER_COMMAND_FILE
-
-echo "#!/usr/bin/env bash"  > $TRIGGER_COMMAND_FILE
-echo "set -e"              >> $TRIGGER_COMMAND_FILE
-echo ""                    >> $TRIGGER_COMMAND_FILE
-echo "case \"\$1\" in"     >> $TRIGGER_COMMAND_FILE
-echo ""                    >> $TRIGGER_COMMAND_FILE
 
 bind_command_regexp="^bind-key +((-r) +)?-T ([^ ]+) +([^ ]+) +(.+)$"
 
 while read -r line
 do
-
   if [[ $line =~ $bind_command_regexp ]]; then
     bind_flags="${BASH_REMATCH[2]}"
     bind_key_table="${BASH_REMATCH[3]}"
@@ -89,8 +82,8 @@ do
         send_key="\\'"
         bind_key="\"'\""
         key_name="SingleQuote"
-    elif [[ $bind_key == "\"" ]]; then
-        bind_key="'\"'"
+    elif [[ $bind_key == "\\\"" ]]; then
+        bind_key="\\\""
         send_key="'\\\"'"
         key_name="DoubleQuote"
     elif [[ $bind_key == "~" ]]; then
@@ -109,43 +102,54 @@ do
         # unmodified bind_key
         send_key='C-\\\\'
         key_name="C-Backslash"
+    elif [[ $bind_key == 'h' ]]; then
+        send_key='Left'
+    elif [[ $bind_key == 'l' ]]; then
+        send_key='Right'
+    elif [[ $bind_key == 'j' ]]; then
+        send_key='Down'
+    elif [[ $bind_key == 'k' ]]; then
+        send_key='Up'
+    elif [[ $bind_key == 'C-h' ]]; then
+        send_key='C-Left'
+    elif [[ $bind_key == 'C-l' ]]; then
+        send_key='C-Right'
+    elif [[ $bind_key == 'C-j' ]]; then
+        send_key='C-Down'
+    elif [[ $bind_key == 'C-k' ]]; then
+        send_key='C-Up'
+    elif [[ $bind_key == 'M-h' ]]; then
+        send_key='M-Left'
+    elif [[ $bind_key == 'M-l' ]]; then
+        send_key='M-Right'
+    elif [[ $bind_key == 'M-j' ]]; then
+        send_key='M-Down'
+    elif [[ $bind_key == 'M-k' ]]; then
+        send_key='M-Up'
+    elif [[ $bind_key == 'o' ]]; then
+        send_key='l'
     else
         # unmodified bind_key
         send_key="$bind_key"
         key_name="$bind_key"
     fi
 
-    for key_table in ${FORWARD_MODE_WHITELIST[@]}; do
       for tmux_command in "${FORWARD_COMMAND_WHITELIST[@]}"; do
-
-        if [[ "$bind_key_table" == "$key_table" && 
-              "$bind_command" = *"$tmux_command"* ]]; then
-
+        if [[ "$bind_command" = *"$tmux_command"* && "$bind_command" != "display-menu"* ]]; then
           remote_keys="\"send-prefix ; send-keys $send_key\""
           remote_test="if-shell -F \"#{m:*remote,#{session_name}}\""
+                bind_command=$(echo $bind_command | gsed 's/\"/\\\"/g')
+                # echo $bind_command
 
-          if [[ $bind_command = *"\""* || $bind_key = *"\""* ]]; then
-
-            echo "  \"${bind_key_table}-${key_name}\")" >> $TRIGGER_COMMAND_FILE
-            echo "    tmux $bind_command" >> $TRIGGER_COMMAND_FILE
-            echo "    ;;" >> $TRIGGER_COMMAND_FILE
-            echo "" >> $TRIGGER_COMMAND_FILE
-
-            echo "unbind-key -T $bind_key_table $bind_key" >> $TMP_FILE
-            echo "bind-key $bind_flags -T $bind_key_table $bind_key $remote_test $remote_keys \"run-shell '$TRIGGER_COMMAND_FILE ${bind_key_table}-${key_name}'\"" >> $TMP_FILE
-
-          else
 
             local_command="\"$bind_command\""
             bind_command="$remote_test $remote_keys $local_command"
-            quote_semicolons "$bind_command"
-            bind_command="$return_value"
+                # echo $bind_command
 
             echo "unbind-key -T $bind_key_table $bind_key" >> $TMP_FILE
             echo "bind-key $bind_flags -T $bind_key_table $bind_key $bind_command" >> $TMP_FILE
-          fi
+          # fi
         fi
-      done
     done
 
   else
@@ -153,16 +157,5 @@ do
     exit 1
   fi
 done < "$INPUT_FILE"
-
-chmod +x $TRIGGER_COMMAND_FILE
-
-echo "  *)" >> $TRIGGER_COMMAND_FILE
-echo "    echo \"Unknown Input: \$1\"" >> $TRIGGER_COMMAND_FILE
-echo "    ;;" >> $TRIGGER_COMMAND_FILE
-echo "" >> $TRIGGER_COMMAND_FILE
-
-echo "esac" >> $TRIGGER_COMMAND_FILE
-
 tmux source-file $TMP_FILE
 rm -f $TMP_FILE
-
