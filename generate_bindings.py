@@ -17,6 +17,8 @@ SEPARATOR = "\x1f"
 STATE_VERSION = 2
 LOCAL_KEYS = frozenset(("r", "s"))
 LOCAL_CYCLE_KEY = "r"
+VIM_NAVIGATION_OPTION = "@tmux-remote-sessions-vim-navigation"
+PRESERVE_CURRENT_PATH_OPTION = "@tmux-remote-sessions-preserve-current-path"
 
 
 class BindingLevel(IntEnum):
@@ -99,6 +101,12 @@ class Binding:
 class BindingState:
     bindings: List[Binding]
     local_bindings: List[Binding]
+
+
+@dataclass(frozen=True)
+class PluginOptions:
+    vim_navigation: bool = True
+    preserve_current_path: bool = False
 
 
 def tmux_quote(value: str) -> str:
@@ -269,8 +277,11 @@ def title_condition(level: BindingLevel) -> str:
     return "#{||:" + ",".join(patterns) + "}"
 
 
-def send_key_for(key: str) -> str:
+def send_key_for(key: str, vim_navigation: bool = True) -> str:
     """Translate outer tmux navigation keys to inner tmux key names."""
+
+    if not vim_navigation:
+        return key
 
     return {
         "h": "Left",
@@ -287,6 +298,23 @@ def send_key_for(key: str) -> str:
         "M-k": "M-Up",
         "o": "l",
     }.get(key, key)
+
+
+def rewrite_local_command(command: str, preserve_current_path: bool = False) -> str:
+    """Make direct local window creation inherit the active pane's path."""
+
+    if not preserve_current_path:
+        return command
+
+    tokens = unquoted_tokens(command)
+    if not tokens or tokens[0] not in ("new-window", "split-window"):
+        return command
+    if any(token == "-c" or token.startswith("-c") for token in tokens[1:]):
+        return command
+
+    return '{} -c "#{{pane_current_path}}"{}'.format(
+        tokens[0], command[len(tokens[0]) :]
+    )
 
 
 def binding_options(binding: Binding) -> str:
@@ -311,7 +339,9 @@ def render_unbind(binding: Binding) -> str:
     )
 
 
-def render_apply(bindings: Iterable[Binding]) -> str:
+def render_apply(
+    bindings: Iterable[Binding], options: PluginOptions = PluginOptions()
+) -> str:
     """Render only bindings whose operations are eligible for forwarding."""
 
     lines: List[str] = []
@@ -322,12 +352,15 @@ def render_apply(bindings: Iterable[Binding]) -> str:
 
         condition = title_condition(level)
         send_command = "send-prefix ; send-keys {}".format(
-            tmux_quote(send_key_for(binding.key))
+            tmux_quote(send_key_for(binding.key, options.vim_navigation))
+        )
+        local_command = rewrite_local_command(
+            binding.command, options.preserve_current_path
         )
         wrapped = "if-shell -F {} {} {}".format(
             tmux_quote(condition),
             tmux_quote(send_command),
-            tmux_quote(binding.command),
+            tmux_quote(local_command),
         )
         lines.extend((render_unbind(binding), render_bind(binding, wrapped)))
 
@@ -346,10 +379,12 @@ def render_cycle_binding() -> str:
     return "\n".join((render_unbind(binding), render_bind(binding, command))) + "\n"
 
 
-def render_plugin_config(bindings: Iterable[Binding]) -> str:
+def render_plugin_config(
+    bindings: Iterable[Binding], options: PluginOptions = PluginOptions()
+) -> str:
     """Render remote forwarding bindings and the local cycle binding."""
 
-    return render_apply(bindings) + render_cycle_binding()
+    return render_apply(bindings, options) + render_cycle_binding()
 
 
 def managed_bindings(bindings: Iterable[Binding]) -> List[Binding]:
@@ -460,6 +495,26 @@ def tmux_option(name: str) -> str:
     return run_tmux(["show-option", "-gqv", name]).strip()
 
 
+def boolean_tmux_option(name: str, default: bool) -> bool:
+    value = tmux_option(name).lower()
+    if not value:
+        return default
+    if value in ("1", "on", "true", "yes"):
+        return True
+    if value in ("0", "off", "false", "no"):
+        return False
+    raise GeneratorError("{} must be on or off".format(name))
+
+
+def plugin_options() -> PluginOptions:
+    return PluginOptions(
+        vim_navigation=boolean_tmux_option(VIM_NAVIGATION_OPTION, True),
+        preserve_current_path=boolean_tmux_option(
+            PRESERVE_CURRENT_PATH_OPTION, False
+        ),
+    )
+
+
 def set_tmux_option(name: str, value: str) -> None:
     run_tmux(["set-option", "-g", name, value])
 
@@ -533,7 +588,7 @@ def install_bindings(table: str) -> None:
             local_bindings(bindings),
         )
         config_path = write_temporary_config(
-            render_plugin_config(bindings),
+            render_plugin_config(bindings, plugin_options()),
             "tmux-remote-sessions-config.",
         )
         source_config(config_path)
@@ -572,7 +627,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     managed_bindings(bindings),
                     local_bindings(bindings),
                 )
-            sys.stdout.write(render_apply(bindings))
+            sys.stdout.write(render_apply(bindings, plugin_options()))
         else:
             if not args.state_in:
                 raise GeneratorError("restore requires --state-in")

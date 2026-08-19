@@ -19,6 +19,8 @@ of manual unbinding and rebinding without requiring repeated prefix keys.
 
 ## Installation
 
+Requires tmux 3.7 or newer and `python3`.
+
 ### Installation with Tmux Plugin Manager (recommended)
 
 Add the plugin to `.tmux.conf`:
@@ -28,8 +30,8 @@ set -g @plugin 'ZHDI-1/tmux-remote-sessions'
 ```
 
 Press prefix + I to fetch the plugin and source it. The local binding generator
-requires `python3` and uses only the Python standard library. The remote tmux
-configuration in the Usage section is also required for title detection.
+uses only the Python standard library. The remote tmux configuration in the
+Usage section is also required for title detection.
 
 ### Manual Installation
 
@@ -84,6 +86,29 @@ Forwarding is hierarchical:
 `prefix+s` always remains local, even at session level, so the outer tmux can
 select a local session. Plain SSH sessions remain local unless they emit a
 recognized marker.
+
+### Optional local behavior
+
+The plugin remaps Vim-style pane keys (`h`, `j`, `k`, and `l`, including their
+Control and Meta variants) to tmux's directional key names when forwarding
+them. This is enabled by default. Disable it before loading the plugin if the
+remote tmux uses the same Vim-style bindings:
+
+```tmux
+set -g @tmux-remote-sessions-vim-navigation off
+```
+
+Local `new-window` and `split-window` commands can explicitly inherit the
+active pane's working directory. This is disabled by default; enable it before
+loading the plugin:
+
+```tmux
+set -g @tmux-remote-sessions-preserve-current-path on
+```
+
+Commands that already specify `-c` are left unchanged. Both options accept
+`on`/`off`, `true`/`false`, `yes`/`no`, or `1`/`0` and take effect when the
+plugin is loaded or the tmux configuration is reloaded.
 
 ## Future Work
 

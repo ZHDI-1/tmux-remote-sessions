@@ -3,6 +3,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -78,6 +79,68 @@ class BindingGeneratorTests(unittest.TestCase):
         for key in keys:
             self.assertIn("unbind-key -T \"prefix\"", output)
             self.assertIn(generator.tmux_quote(key), output)
+
+    def test_vim_navigation_remapping_can_be_disabled(self):
+        self.assertEqual(generator.send_key_for("h"), "Left")
+        self.assertEqual(generator.send_key_for("C-j"), "C-Down")
+        self.assertEqual(generator.send_key_for("h", vim_navigation=False), "h")
+        self.assertEqual(generator.send_key_for("C-j", vim_navigation=False), "C-j")
+
+        output = generator.render_apply(
+            [self.binding(key="h", command="select-pane -L")],
+            generator.PluginOptions(vim_navigation=False),
+        )
+        self.assertIn('send-keys \\"h\\"', output)
+        self.assertNotIn('send-keys \\"Left\\"', output)
+
+    def test_local_window_creation_can_preserve_current_path(self):
+        self.assertEqual(
+            generator.rewrite_local_command("split-window -h", True),
+            'split-window -c "#{pane_current_path}" -h',
+        )
+        self.assertEqual(
+            generator.rewrite_local_command("new-window", True),
+            'new-window -c "#{pane_current_path}"',
+        )
+        self.assertEqual(
+            generator.rewrite_local_command("split-window -c /tmp -h", True),
+            "split-window -c /tmp -h",
+        )
+        self.assertEqual(
+            generator.rewrite_local_command("split-window -h", False),
+            "split-window -h",
+        )
+
+    def test_path_rewrite_only_changes_local_fallback(self):
+        output = generator.render_apply(
+            [self.binding(command="split-window -h")],
+            generator.PluginOptions(preserve_current_path=True),
+        )
+        self.assertIn('send-prefix ; send-keys \\"%\\"', output)
+        self.assertIn('split-window -c \\"#{pane_current_path}\\" -h', output)
+
+    def test_plugin_options_read_tmux_values_and_defaults(self):
+        values = {
+            generator.VIM_NAVIGATION_OPTION: "off",
+            generator.PRESERVE_CURRENT_PATH_OPTION: "yes",
+        }
+        with patch.object(
+            generator, "tmux_option", side_effect=lambda name: values.get(name, "")
+        ):
+            self.assertEqual(
+                generator.plugin_options(),
+                generator.PluginOptions(
+                    vim_navigation=False, preserve_current_path=True
+                ),
+            )
+
+        with patch.object(generator, "tmux_option", return_value=""):
+            self.assertEqual(generator.plugin_options(), generator.PluginOptions())
+
+    def test_invalid_boolean_option_is_rejected(self):
+        with patch.object(generator, "tmux_option", return_value="sometimes"):
+            with self.assertRaisesRegex(generator.GeneratorError, "must be on or off"):
+                generator.boolean_tmux_option("@test-option", False)
 
     def test_state_round_trip_is_json(self):
         bindings = [self.binding(key="%", repeat=True, note="test note")]

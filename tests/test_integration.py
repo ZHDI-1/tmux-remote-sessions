@@ -139,6 +139,59 @@ class PluginIntegrationTests(unittest.TestCase):
             self.assertTrue(second_state.is_file())
             self.assertIn("send-prefix; send-keys R", list_bindings(socket_path)["r"].command)
 
+    def test_optional_navigation_and_current_path_behavior(self):
+        with tempfile.TemporaryDirectory(prefix="tmux-remote-sessions-options-") as directory:
+            directory_path = Path(directory)
+            plugin_directory = directory_path / "plugin"
+            plugin_directory.mkdir()
+            socket_path = directory_path / "tmux.sock"
+            start_server(socket_path)
+            self.addCleanup(self.kill_server, socket_path)
+            copy_plugin(plugin_directory)
+
+            run_tmux(
+                socket_path,
+                "bind-key",
+                "-r",
+                "-T",
+                "prefix",
+                "h",
+                "select-pane",
+                "-L",
+            )
+
+            run_tmux(
+                socket_path,
+                "set-option",
+                "-g",
+                generator.VIM_NAVIGATION_OPTION,
+                "off",
+            )
+            run_tmux(
+                socket_path,
+                "set-option",
+                "-g",
+                generator.PRESERVE_CURRENT_PATH_OPTION,
+                "on",
+            )
+            run_tmux(socket_path, "run-shell", str(plugin_directory / "tmux-remote-sessions.tmux"))
+
+            state_file = run_tmux(
+                socket_path,
+                "show-option",
+                "-gqv",
+                "@tmux-remote-sessions-state-file",
+            ).stdout.strip()
+            self.addCleanup(remove_state, state_file)
+
+            bindings = list_bindings(socket_path)
+            self.assertIn('send-keys \\"h\\"', bindings["h"].command)
+            self.assertNotIn('send-keys \\"Left\\"', bindings["h"].command)
+            self.assertIn(
+                'split-window -c \\"#{pane_current_path}\\"',
+                bindings["%"].command,
+            )
+
     def test_title_markers_select_the_expected_forwarding_scope(self):
         with tempfile.TemporaryDirectory(prefix="tmux-remote-sessions-title-") as directory:
             socket_path = Path(directory) / "title.sock"
