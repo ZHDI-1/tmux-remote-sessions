@@ -19,7 +19,7 @@ of manual unbinding and rebinding without requiring repeated prefix keys.
 
 ## Installation
 
-Requires tmux 3.7 or newer and `python3`.
+Install locally. Requires tmux 3.7 or newer and `python3` on the local host.
 
 ### Installation with Tmux Plugin Manager (recommended)
 
@@ -30,8 +30,8 @@ set -g @plugin 'ZHDI-1/tmux-remote-sessions'
 ```
 
 Press prefix + I to fetch the plugin and source it. The local binding generator
-uses only the Python standard library. The remote tmux configuration in the
-Usage section is also required for title detection.
+uses only the Python standard library. Configure the remote tmux as described
+below as well.
 
 ### Manual Installation
 
@@ -51,29 +51,49 @@ Reload `.tmux.conf` with `tmux source-file ~/.tmux.conf`.
 
 ## Usage
 
-The local plugin detects nested tmux through a title marker emitted by the
-remote tmux client. It does not modify the remote host automatically; add this
-configuration to the remote `~/.tmux.conf`:
+Install the plugin on the **local host only**. The remote host needs only tmux
+and the configuration below; no plugin, Python, or helper script is required.
+
+### Remote configuration
+
+Add this to the remote `~/.tmux.conf`, replacing the old `bind-key R` line if
+present:
 
 ```tmux
 set -g @trs-level pane
 set -g set-titles on
 set -g set-titles-string 'TRS:#{@trs-level}:remote'
 
-bind-key R if-shell -F '#{==:#{@trs-level},pane}' 'set-option @trs-level window' 'if-shell -F "#{==:#{@trs-level},window}" "set-option @trs-level session" "set-option @trs-level pane"'
+bind-key R set-option -F @trs-level '#{?#{==:#{@trs-level},pane},window,pane}'
+bind-key C-r if-shell -F '#{==:#{@trs-level},session}' 'set-option -F @trs-level "#{?#{==:#{@trs-return-level},window},window,pane}"' 'set-option -F @trs-return-level "#{@trs-level}" ; set-option @trs-level session'
 ```
 
-The remote `R` binding cycles `TRS:pane`, `TRS:window`, and `TRS:session`.
-The local `prefix+r` sends `prefix+R` into a recognized remote tmux pane; it
-does nothing for a plain SSH shell. The marker travels through SSH and is read
-from the active local pane's `#{pane_title}`. A normal SSH shell should use a
-different title such as `TRS:shell` so it is not treated as nested tmux. Reset
-that title after the remote tmux client detaches. On the local tmux, ensure
-title updates are allowed:
+Reload the remote configuration with `tmux source-file ~/.tmux.conf`.
+With this snippet, use these shortcuts from your **local tmux**:
+
+| Shortcut | Action |
+| --- | --- |
+| `prefix+r` | Toggle remote pane/window scope; from session scope, return to pane. |
+| `prefix+Shift+r` (`prefix+R`) | Enter remote session scope; press again to return to the previous pane/window scope. |
+| `prefix+s` | Always select a local session. |
+
+The local scope shortcuts send remote `prefix+R` and `prefix+Ctrl+r`,
+respectively. The remote bindings change `@trs-level`, which updates the title
+seen by the local plugin. Existing remote configurations with only the old
+three-level `R` binding still work with local `prefix+r`; add the `C-r` binding
+to use the separate session shortcut.
+
+On the **local** tmux, allow title updates:
 
 ```tmux
 set -g allow-set-title on
 ```
+
+The marker travels through SSH and is read from the active local pane's
+`#{pane_title}`. A plain SSH shell should use a different title such as
+`TRS:shell`, and reset that title after the remote tmux client detaches. Both
+scope shortcuts require a recognized remote title; otherwise they only show a
+local message.
 
 Forwarding is hierarchical:
 
@@ -83,24 +103,33 @@ Forwarding is hierarchical:
   `next-window`, `select-window`, `new-window`, and `select-layout`.
 - `TRS:session` additionally forwards session/client operations.
 
-`prefix+s` always remains local, even at session level, so the outer tmux can
-select a local session. Plain SSH sessions remain local unless they emit a
-recognized marker.
+`prefix+s` always remains local, even at session level. Plain SSH sessions
+remain local unless they emit a recognized marker.
 
-### Optional local behavior
+### Three-level cycling
+
+If you prefer the original pane → window → session → pane cycle, replace the
+remote `bind-key R` line with this one. The separate session shortcut still
+works:
+
+```tmux
+bind-key R if-shell -F '#{!=:#{@trs-level},session}' 'set-option -F @trs-return-level "#{@trs-level}" ; set-option -F @trs-level "#{?#{==:#{@trs-level},pane},window,#{?#{==:#{@trs-level},window},session,pane}}"' 'set-option @trs-level pane'
+```
+
+### Local options
 
 The plugin remaps Vim-style pane keys (`h`, `j`, `k`, and `l`, including their
 Control and Meta variants) to tmux's directional key names when forwarding
-them. This is enabled by default. Disable it before loading the plugin if the
-remote tmux uses the same Vim-style bindings:
+them. This is enabled by default. Disable it before loading the local plugin
+if the remote tmux uses the same Vim-style bindings:
 
 ```tmux
 set -g @tmux-remote-sessions-vim-navigation off
 ```
 
-Local `new-window` and `split-window` commands can explicitly inherit the
-active pane's working directory. This is disabled by default; enable it before
-loading the plugin:
+Local `new-window` and `split-window` bindings can inherit the active local
+pane's working directory. This is disabled by default; enable it before loading
+the local plugin:
 
 ```tmux
 set -g @tmux-remote-sessions-preserve-current-path on
@@ -108,7 +137,31 @@ set -g @tmux-remote-sessions-preserve-current-path on
 
 Commands that already specify `-c` are left unchanged. Both options accept
 `on`/`off`, `true`/`false`, `yes`/`no`, or `1`/`0` and take effect when the
-plugin is loaded or the tmux configuration is reloaded.
+plugin is loaded or the local tmux configuration is reloaded.
+
+### Remote working directories
+
+For the same directory-preserving behavior remotely, add these three bindings
+to the remote `~/.tmux.conf`:
+
+```tmux
+bind-key c new-window -c '#{pane_current_path}'
+bind-key % split-window -h -c '#{pane_current_path}'
+bind-key '"' split-window -c '#{pane_current_path}'
+```
+
+Reload the remote configuration. These bindings resolve the **remote pane's
+current directory when pressed**, including when forwarded from local tmux.
+Splits are forwarded at every recognized level; `new-window` is forwarded at
+window/session level and stays local at pane level.
+
+If you already customize these keys, add `-c '#{pane_current_path}'` to your
+existing creation commands instead of replacing them. Keep any explicit `-c`
+directory you want to preserve.
+
+The local `@tmux-remote-sessions-preserve-current-path` option controls local
+commands only. Forwarding sends keypresses, so remote path behavior is configured
+by these remote bindings independently; no remote plugin options are needed.
 
 ## Future Work
 
@@ -132,6 +185,10 @@ classifies each binding by tmux scope, and owns the install/restore lifecycle. I
 emits temporary tmux configuration with carefully quoted conditional commands,
 sources it, and stores original bindings in per-installation JSON state. The
 `.tmux` file is only the TPM-compatible launcher.
+
+Reload restores the previous local bindings before applying current options,
+including the originals of both scope shortcuts. Remote behavior is defined
+entirely by the tmux configuration snippets above.
 
 For a quick syntax and unit-test check, run:
 

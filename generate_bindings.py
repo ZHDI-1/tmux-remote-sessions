@@ -14,9 +14,10 @@ from typing import Iterable, List, Optional, Sequence
 
 
 SEPARATOR = "\x1f"
-STATE_VERSION = 2
-LOCAL_KEYS = frozenset(("r", "s"))
+STATE_VERSION = 3
+LOCAL_KEYS = frozenset(("r", "R", "s"))
 LOCAL_CYCLE_KEY = "r"
+LOCAL_CONTROL_KEYS = (LOCAL_CYCLE_KEY, "R")
 VIM_NAVIGATION_OPTION = "@tmux-remote-sessions-vim-navigation"
 PRESERVE_CURRENT_PATH_OPTION = "@tmux-remote-sessions-preserve-current-path"
 
@@ -101,6 +102,7 @@ class Binding:
 class BindingState:
     bindings: List[Binding]
     local_bindings: List[Binding]
+    owned_keys: List[str]
 
 
 @dataclass(frozen=True)
@@ -367,13 +369,13 @@ def render_apply(
     return "\n".join(lines) + ("\n" if lines else "")
 
 
-def render_cycle_binding() -> str:
-    """Render the local key that asks a nested tmux to cycle its title."""
+def render_cycle_binding(key: str = LOCAL_CYCLE_KEY, remote_key: str = "R") -> str:
+    """Render a local key that asks a nested tmux to change its title level."""
 
-    binding = Binding("prefix", LOCAL_CYCLE_KEY, False, "", "")
+    binding = Binding("prefix", key, False, "", "")
     command = "if-shell -F {} {} {}".format(
         tmux_quote(title_condition(BindingLevel.PANE)),
-        tmux_quote("send-prefix; send-keys R"),
+        tmux_quote("send-prefix; send-keys " + remote_key),
         tmux_quote('display-message "not a recognized remote tmux pane"'),
     )
     return "\n".join((render_unbind(binding), render_bind(binding, command))) + "\n"
@@ -382,9 +384,13 @@ def render_cycle_binding() -> str:
 def render_plugin_config(
     bindings: Iterable[Binding], options: PluginOptions = PluginOptions()
 ) -> str:
-    """Render remote forwarding bindings and the local cycle binding."""
+    """Render remote forwarding bindings and local scope shortcuts."""
 
-    return render_apply(bindings, options) + render_cycle_binding()
+    return (
+        render_apply(bindings, options)
+        + render_cycle_binding()
+        + render_cycle_binding("R", "C-r")
+    )
 
 
 def managed_bindings(bindings: Iterable[Binding]) -> List[Binding]:
@@ -399,16 +405,18 @@ def managed_bindings(bindings: Iterable[Binding]) -> List[Binding]:
 
 
 def local_bindings(bindings: Iterable[Binding]) -> List[Binding]:
-    """Return original bindings replaced by plugin-owned local keys."""
+    """Return original bindings replaced by plugin-owned control keys."""
 
-    return [binding for binding in bindings if binding.key == LOCAL_CYCLE_KEY]
+    return [binding for binding in bindings if binding.key in LOCAL_CONTROL_KEYS]
 
 
 def render_restore(
-    bindings: Iterable[Binding], local: Iterable[Binding] = ()
+    bindings: Iterable[Binding],
+    local: Iterable[Binding] = (),
+    keys: Sequence[str] = LOCAL_CONTROL_KEYS,
 ) -> str:
     lines: List[str] = [
-        render_unbind(Binding("prefix", LOCAL_CYCLE_KEY, False, "", ""))
+        render_unbind(Binding("prefix", key, False, "", "")) for key in keys
     ]
     for binding in bindings:
         lines.extend((render_unbind(binding), render_bind(binding, tmux_quote(binding.command))))
@@ -421,6 +429,7 @@ def write_state(
     path: str,
     bindings: Sequence[Binding],
     local: Sequence[Binding] = (),
+    keys: Sequence[str] = LOCAL_CONTROL_KEYS,
 ) -> None:
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -428,6 +437,7 @@ def write_state(
         "version": STATE_VERSION,
         "bindings": [asdict(binding) for binding in bindings],
         "local_bindings": [asdict(binding) for binding in local],
+        "owned_keys": list(keys),
     }
 
     fd, temporary = tempfile.mkstemp(
@@ -455,7 +465,7 @@ def read_state(path: str) -> BindingState:
     except (OSError, json.JSONDecodeError) as error:
         raise GeneratorError("could not read binding state {}: {}".format(path, error))
 
-    if not isinstance(payload, dict) or payload.get("version") not in (1, STATE_VERSION):
+    if not isinstance(payload, dict) or payload.get("version") not in (1, 2, STATE_VERSION):
         raise GeneratorError("unsupported binding state version")
 
     try:
@@ -465,9 +475,13 @@ def read_state(path: str) -> BindingState:
         local_records = payload.get("local_bindings", [])
         if not isinstance(local_records, list):
             raise TypeError("local_bindings must be a list")
+        keys = payload.get("owned_keys", [LOCAL_CYCLE_KEY])
+        if not isinstance(keys, list) or not all(isinstance(key, str) for key in keys):
+            raise TypeError("owned_keys must be a list of strings")
         return BindingState(
             bindings=[Binding(**record) for record in records],
             local_bindings=[Binding(**record) for record in local_records],
+            owned_keys=keys,
         )
     except (KeyError, TypeError, ValueError) as error:
         raise GeneratorError("invalid binding state: {}".format(error))
@@ -560,7 +574,7 @@ def restore_installed_bindings() -> None:
     state_path = Path(state_filename)
     state = read_state(str(state_path))
     config_path = write_temporary_config(
-        render_restore(state.bindings, state.local_bindings),
+        render_restore(state.bindings, state.local_bindings, state.owned_keys),
         "tmux-remote-sessions-restore.",
     )
     try:
@@ -574,6 +588,7 @@ def restore_installed_bindings() -> None:
 
 
 def install_bindings(table: str) -> None:
+    options = plugin_options()
     if tmux_option(INSTALLED_OPTION):
         restore_installed_bindings()
 
@@ -588,7 +603,7 @@ def install_bindings(table: str) -> None:
             local_bindings(bindings),
         )
         config_path = write_temporary_config(
-            render_plugin_config(bindings, plugin_options()),
+            render_plugin_config(bindings, options),
             "tmux-remote-sessions-config.",
         )
         source_config(config_path)
@@ -621,18 +636,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             install_bindings(args.table)
         elif args.mode == "apply":
             bindings = query_bindings(args.table)
+            options = plugin_options()
             if args.state_out:
                 write_state(
                     args.state_out,
                     managed_bindings(bindings),
-                    local_bindings(bindings),
+                    keys=(),
                 )
-            sys.stdout.write(render_apply(bindings, plugin_options()))
+            sys.stdout.write(render_apply(bindings, options))
         else:
             if not args.state_in:
                 raise GeneratorError("restore requires --state-in")
             state = read_state(args.state_in)
-            sys.stdout.write(render_restore(state.bindings, state.local_bindings))
+            sys.stdout.write(
+                render_restore(state.bindings, state.local_bindings, state.owned_keys)
+            )
     except GeneratorError as error:
         print("generate_bindings.py: {}".format(error), file=sys.stderr)
         return 1

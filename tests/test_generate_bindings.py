@@ -119,6 +119,18 @@ class BindingGeneratorTests(unittest.TestCase):
         self.assertIn('send-prefix ; send-keys \\"%\\"', output)
         self.assertIn('split-window -c \\"#{pane_current_path}\\" -h', output)
 
+    def test_session_shortcut_is_guarded_by_recognized_titles(self):
+        output = generator.render_cycle_binding("R", "C-r")
+        self.assertIn("TRS:pane*", output)
+        self.assertIn("TRS:window*", output)
+        self.assertIn("TRS:session*", output)
+        self.assertIn("send-prefix; send-keys C-r", output)
+
+    def test_local_control_keys_are_saved_separately(self):
+        bindings = [self.binding(key=key) for key in ("r", "R", "C-r", "s")]
+        self.assertEqual(generator.local_bindings(bindings), bindings[:2])
+        self.assertEqual(generator.managed_bindings(bindings), [bindings[2]])
+
     def test_plugin_options_read_tmux_values_and_defaults(self):
         values = {
             generator.VIM_NAVIGATION_OPTION: "off",
@@ -153,6 +165,20 @@ class BindingGeneratorTests(unittest.TestCase):
             state = generator.read_state(str(path))
             self.assertEqual(state.bindings, bindings)
             self.assertEqual(state.local_bindings, local_bindings)
+            self.assertEqual(state.owned_keys, list(generator.LOCAL_CONTROL_KEYS))
+
+    def test_legacy_state_only_owns_the_original_cycle_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bindings.json"
+            for version in (1, 2):
+                with self.subTest(version=version):
+                    path.write_text(json.dumps({"version": version, "bindings": []}))
+                    state = generator.read_state(str(path))
+                    self.assertEqual(state.owned_keys, ["r"])
+                    output = generator.render_restore(
+                        state.bindings, state.local_bindings, state.owned_keys
+                    )
+                    self.assertNotIn('"R"', output)
 
     def test_restore_preserves_repeat_and_note(self):
         output = generator.render_restore(
